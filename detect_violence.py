@@ -281,9 +281,11 @@ def classify_video_actions(
         while len(frame_indices) < mae_window:
             frame_indices.append(frame_indices[-1])
 
-        frames = vr.get_batch(frame_indices[:mae_window]).asnumpy()
-        frame_list = [frames[j] for j in range(len(frames))]
-        del frames
+        # Read frames one at a time to avoid OOM on long videos
+        frame_list = []
+        for fi in frame_indices[:mae_window]:
+            frame_list.append(vr[fi].asnumpy())
+
 
         inputs = mae_processor(frame_list, return_tensors="pt").to(DEVICE)
         del frame_list
@@ -325,15 +327,25 @@ def process_video(
     """Process a single video with all four signals."""
     name = Path(video_path).stem
 
-    # 1. Sample frames
-    print(f"  Frames...", end=" ", flush=True)
-    frames = sample_frames(video_path, SAMPLE_FPS)
-    print(f"{len(frames)}", end=" | ", flush=True)
+    # 1. Sample frames + CLIP scoring (chunked to limit memory)
+    vr = VideoReader(video_path, ctx=cpu(0))
+    native_fps = vr.get_avg_fps()
+    step = max(1, int(native_fps / SAMPLE_FPS))
+    all_indices = list(range(0, len(vr), step))
+    n_frames = len(all_indices)
+    print(f"  Frames... {n_frames}", end=" | ", flush=True)
 
-    # 2. CLIP scoring
+    # 2. CLIP scoring in chunks of 64 frames
     print(f"CLIP...", end=" ", flush=True)
-    clip_scores = score_frames_clip(frames, clip_model, clip_processor, pos_features, neg_features)
-    del frames  # free memory
+    clip_scores_list = []
+    for ci in range(0, len(all_indices), 64):
+        chunk_idx = all_indices[ci : ci + 64]
+        chunk_frames = [vr[idx].asnumpy() for idx in chunk_idx]
+        chunk_scores = score_frames_clip(chunk_frames, clip_model, clip_processor, pos_features, neg_features)
+        clip_scores_list.append(chunk_scores)
+        del chunk_frames
+    clip_scores = np.concatenate(clip_scores_list)
+    del vr
     print("ok", end=" | ", flush=True)
 
     # 3. PANNs audio classification
