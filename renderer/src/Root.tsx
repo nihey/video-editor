@@ -17,6 +17,7 @@ export const RemotionRoot = () => {
           segments: [],
           showLabels: true,
           fps: 30,
+          voiceovers: [],
         } satisfies ViolenceHighlightsProps
       }
       calculateMetadata={calculateMetadata}

@@ -6,9 +6,15 @@ export type Segment = {
   score: number;
 };
 
+export type VoiceoverEntry = {
+  label: string;
+  file: string;
+};
+
 export type ViolenceHighlightsProps = {
   source: string;
   segments: Segment[];
   showLabels: boolean;
   fps: number;
+  voiceovers?: VoiceoverEntry[];
 };

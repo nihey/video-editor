@@ -6,6 +6,7 @@ import { Video } from "@remotion/media";
 import { SegmentLabel } from "./SegmentLabel";
 import { KenBurns } from "./KenBurns";
 import { SegmentSFX } from "./SoundEffects";
+import { Voiceover } from "./Voiceover";
 import type { ViolenceHighlightsProps, Segment } from "./types";
 
 const TRANSITION_FRAMES = 10; // ~0.33s fade between segments
@@ -32,8 +33,12 @@ export const ViolenceHighlights: React.FC<ViolenceHighlightsProps> = ({
   source,
   segments,
   showLabels,
+  voiceovers,
 }) => {
   const { fps } = useVideoConfig();
+  const voiceoverMap = new Map(
+    (voiceovers || []).map((vo) => [vo.label, vo.file]),
+  );
 
   const children: React.ReactNode[] = [];
 
@@ -69,6 +74,9 @@ export const ViolenceHighlights: React.FC<ViolenceHighlightsProps> = ({
           </KenBurns>
           {showLabels && <SegmentLabel label={seg.label} />}
           <SegmentSFX score={seg.score} durationInFrames={durationInFrames} />
+          {voiceoverMap.has(seg.label) && (
+            <Voiceover file={voiceoverMap.get(seg.label)!} />
+          )}
         </AbsoluteFill>
       </TransitionSeries.Sequence>,
     );
