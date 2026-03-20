@@ -16,6 +16,7 @@ from pathlib import Path
 
 os.environ["PYTHONUNBUFFERED"] = "1"
 
+import gc
 import cv2
 import numpy as np
 import torch
@@ -447,6 +448,8 @@ def concatenate_clips(clip_paths: list[str], output_path: str):
 
 def main(compile_only=False):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    cache_dir = os.path.join(OUTPUT_DIR, ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
 
     if not compile_only:
         video_files = sorted([
@@ -456,43 +459,168 @@ def main(compile_only=False):
         ])
         print(f"Found {len(video_files)} videos\n")
 
-        # Load models
-        print("Loading PANNs audio classifier...")
-        at_model = AudioTagging(checkpoint_path=None, device=DEVICE)
-
-        print(f"Loading CLIP ({CLIP_MODEL_NAME})...")
+        # ── Pass 1: CLIP scoring (load CLIP, process all, unload) ──
+        print("=" * 50)
+        print("PASS 1/4: CLIP visual scoring")
+        print("=" * 50)
         clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(DEVICE)
         clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
         clip_model.eval()
-
-        print(f"Loading VideoMAE ({VIDEOMAE_MODEL_NAME})...")
-        mae_model = VideoMAEForVideoClassification.from_pretrained(VIDEOMAE_MODEL_NAME).to(DEVICE)
-        mae_processor = VideoMAEImageProcessor.from_pretrained(VIDEOMAE_MODEL_NAME)
-        mae_model.eval()
-
         with torch.no_grad():
             pos_inputs = clip_processor(text=POSITIVE_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
             pos_out = clip_model.get_text_features(**pos_inputs)
             pos_features = pos_out if isinstance(pos_out, torch.Tensor) else pos_out.pooler_output
             pos_features = pos_features / pos_features.norm(dim=-1, keepdim=True)
-
             neg_inputs = clip_processor(text=NEGATIVE_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
             neg_out = clip_model.get_text_features(**neg_inputs)
             neg_features = neg_out if isinstance(neg_out, torch.Tensor) else neg_out.pooler_output
             neg_features = neg_features / neg_features.norm(dim=-1, keepdim=True)
 
-        print(f"Models loaded on {DEVICE}\n")
+        for i, vpath in enumerate(video_files):
+            name = Path(vpath).stem
+            cache_file = os.path.join(cache_dir, f"{name}_clip.npy")
+            if os.path.exists(cache_file):
+                print(f"  [{i+1}/{len(video_files)}] {name} (cached)")
+                continue
+            print(f"  [{i+1}/{len(video_files)}] {name}...", end=" ", flush=True)
+            try:
+                vr = VideoReader(vpath, ctx=cpu(0))
+                step = max(1, int(vr.get_avg_fps() / SAMPLE_FPS))
+                indices = list(range(0, len(vr), step))
+                scores_list = []
+                for ci in range(0, len(indices), 32):
+                    chunk_idx = indices[ci : ci + 32]
+                    frames = [vr[idx].asnumpy() for idx in chunk_idx]
+                    scores_list.append(score_frames_clip(frames, clip_model, clip_processor, pos_features, neg_features, batch_size=16))
+                    del frames
+                    gc.collect()
+                del vr
+                np.save(cache_file, np.concatenate(scores_list))
+                gc.collect()
+                print("ok")
+            except Exception as e:
+                print(f"ERROR: {e}")
 
-        # Process all videos
+        del clip_model, clip_processor, pos_features, neg_features
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # ── Pass 2: PANNs audio classification ──
+        print(f"\n{'='*50}")
+        print("PASS 2/4: PANNs audio classification")
+        print("=" * 50)
+        at_model = AudioTagging(checkpoint_path=None, device=DEVICE)
+
+        for i, vpath in enumerate(video_files):
+            name = Path(vpath).stem
+            cache_file = os.path.join(cache_dir, f"{name}_panns.npy")
+            if os.path.exists(cache_file):
+                print(f"  [{i+1}/{len(video_files)}] {name} (cached)")
+                continue
+            print(f"  [{i+1}/{len(video_files)}] {name}...", end=" ", flush=True)
+            try:
+                scores = classify_audio_panns(vpath, at_model, SAMPLE_FPS)
+                np.save(cache_file, scores)
+                print("ok")
+            except Exception as e:
+                print(f"ERROR: {e}")
+
+        del at_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # ── Pass 3: VideoMAE action recognition ──
+        print(f"\n{'='*50}")
+        print("PASS 3/4: VideoMAE action recognition")
+        print("=" * 50)
+        mae_model = VideoMAEForVideoClassification.from_pretrained(VIDEOMAE_MODEL_NAME).to(DEVICE)
+        mae_processor = VideoMAEImageProcessor.from_pretrained(VIDEOMAE_MODEL_NAME)
+        mae_model.eval()
+
+        for i, vpath in enumerate(video_files):
+            name = Path(vpath).stem
+            cache_file = os.path.join(cache_dir, f"{name}_mae.npy")
+            if os.path.exists(cache_file):
+                print(f"  [{i+1}/{len(video_files)}] {name} (cached)")
+                continue
+            print(f"  [{i+1}/{len(video_files)}] {name}...", end=" ", flush=True)
+            try:
+                scores = classify_video_actions(vpath, mae_model, mae_processor, SAMPLE_FPS)
+                np.save(cache_file, scores)
+                print("ok")
+            except Exception as e:
+                print(f"ERROR: {e}")
+
+        del mae_model, mae_processor
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # ── Pass 4: Optical flow (CPU only, no GPU needed) ──
+        print(f"\n{'='*50}")
+        print("PASS 4/4: Optical flow")
+        print("=" * 50)
+
+        for i, vpath in enumerate(video_files):
+            name = Path(vpath).stem
+            cache_file = os.path.join(cache_dir, f"{name}_flow.npy")
+            if os.path.exists(cache_file):
+                print(f"  [{i+1}/{len(video_files)}] {name} (cached)")
+                continue
+            print(f"  [{i+1}/{len(video_files)}] {name}...", end=" ", flush=True)
+            try:
+                scores = compute_optical_flow(vpath, SAMPLE_FPS)
+                np.save(cache_file, scores)
+                print("ok")
+            except Exception as e:
+                print(f"ERROR: {e}")
+
+        # ── Combine all signals ──
+        print(f"\n{'='*50}")
+        print("Combining signals and finding peaks")
+        print("=" * 50)
+
         all_segments = []
         for i, vpath in enumerate(video_files):
-            print(f"[{i+1}/{len(video_files)}] {Path(vpath).name}")
+            name = Path(vpath).stem
             try:
-                segs = process_video(vpath, at_model, clip_model, clip_processor, pos_features, neg_features, mae_model, mae_processor)
-                all_segments.extend(segs)
-                print(f"  -> {len(segs)} candidates\n")
-            except Exception as e:
-                print(f"  ERROR: {e}\n")
+                clip_scores = np.load(os.path.join(cache_dir, f"{name}_clip.npy"))
+                panns_scores = np.load(os.path.join(cache_dir, f"{name}_panns.npy"))
+                mae_scores = np.load(os.path.join(cache_dir, f"{name}_mae.npy"))
+                flow_scores = np.load(os.path.join(cache_dir, f"{name}_flow.npy"))
+            except FileNotFoundError:
+                continue
+
+            min_len = min(len(clip_scores), len(panns_scores), len(flow_scores), len(mae_scores))
+            clip_norm = normalize(clip_scores[:min_len])
+            panns_norm = normalize(panns_scores[:min_len])
+            flow_norm = normalize(flow_scores[:min_len])
+            mae_norm = normalize(mae_scores[:min_len])
+
+            hybrid = (PANNS_WEIGHT * panns_norm + CLIP_WEIGHT * clip_norm +
+                      FLOW_WEIGHT * flow_norm + VIDEOMAE_WEIGHT * mae_norm)
+
+            smooth_window = max(3, SAMPLE_FPS * 3)
+            hybrid_smooth = uniform_filter1d(hybrid, size=smooth_window)
+
+            peak_distance = SAMPLE_FPS * WINDOW_SEC
+            peaks, _ = find_peaks(
+                hybrid_smooth, distance=peak_distance,
+                height=np.percentile(hybrid_smooth, 75),
+            )
+
+            for peak in peaks:
+                t_sec = peak / SAMPLE_FPS
+                all_segments.append({
+                    "video": vpath, "video_name": name,
+                    "time_sec": float(t_sec),
+                    "score": float(hybrid_smooth[peak]),
+                    "panns_score": float(panns_norm[peak]),
+                    "clip_score": float(clip_norm[peak]),
+                    "flow_score": float(flow_norm[peak]),
+                    "mae_score": float(mae_norm[peak]),
+                })
+
+            print(f"  {name}: {len(peaks)} candidates")
 
         # Rank and extract top N
         all_segments.sort(key=lambda x: x["score"], reverse=True)
