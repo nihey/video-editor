@@ -1,14 +1,36 @@
 #!/usr/bin/env bash
 # Render a violence highlights video using Remotion.
-# Usage: ./render.sh <manifest.json> [output.mp4]
+# Usage: ./render.sh <manifest.json> [output.mp4] [--no-labels] [--voiceover <dir>]
 #
 # The manifest JSON is produced by condense_violence.py and contains
 # the source video path + segment definitions.
 
 set -euo pipefail
 
-MANIFEST="${1:?Usage: ./render.sh <manifest.json> [output.mp4]}"
-OUTPUT="${2:-$(dirname "$MANIFEST")/$(basename "$MANIFEST" .json)_rendered.mp4}"
+MANIFEST=""
+OUTPUT=""
+SHOW_LABELS=true
+VOICEOVER_DIR=""
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --no-labels) SHOW_LABELS=false; shift ;;
+    --voiceover) VOICEOVER_DIR="$2"; shift 2 ;;
+    *)
+      if [ -z "$MANIFEST" ]; then MANIFEST="$1"
+      elif [ -z "$OUTPUT" ]; then OUTPUT="$1"
+      fi
+      shift ;;
+  esac
+done
+
+if [ -z "$MANIFEST" ]; then
+  echo "Usage: ./render.sh <manifest.json> [output.mp4] [--no-labels] [--voiceover <dir>]"
+  exit 1
+fi
+
+OUTPUT="${OUTPUT:-$(dirname "$MANIFEST")/$(basename "$MANIFEST" .json)_rendered.mp4}"
 RENDERER_DIR="$(cd "$(dirname "$0")/renderer" && pwd)"
 
 if [ ! -f "$MANIFEST" ]; then
@@ -27,20 +49,42 @@ fi
 mkdir -p "$RENDERER_DIR/public"
 ln -sf "$SOURCE" "$RENDERER_DIR/public/source.mp4"
 
-# Build props JSON: replace source with staticFile reference
+# Symlink voiceover files if provided
+if [ -n "$VOICEOVER_DIR" ] && [ -d "$VOICEOVER_DIR" ]; then
+  mkdir -p "$RENDERER_DIR/public/voiceover"
+  for wav in "$VOICEOVER_DIR"/*.wav; do
+    [ -f "$wav" ] && ln -sf "$(realpath "$wav")" "$RENDERER_DIR/public/voiceover/$(basename "$wav")"
+  done
+fi
+
+# Build props JSON
 PROPS=$(python3 -c "
-import json, sys
+import json, sys, os
+
 m = json.load(open('$MANIFEST'))
 m['source'] = 'source.mp4'
-m['showLabels'] = True
+m['showLabels'] = $( [ "$SHOW_LABELS" = "true" ] && echo "True" || echo "False" )
 m['fps'] = 30
-# staticFile() is called in the component, we just pass the filename
+
+# Add voiceover entries if voiceover manifest exists
+vo_dir = '$VOICEOVER_DIR'
+if vo_dir:
+    vo_manifest = os.path.join(vo_dir, 'voiceover.json')
+    if os.path.exists(vo_manifest):
+        vo = json.load(open(vo_manifest))
+        m['voiceovers'] = [
+            {'label': label, 'file': f'voiceover/{filename}'}
+            for label, filename in vo.get('files', {}).items()
+        ]
+
 json.dump(m, sys.stdout)
 ")
 
 echo "Rendering with Remotion..."
 echo "  Source: $SOURCE"
 echo "  Segments: $(python3 -c "import json; print(len(json.load(open('$MANIFEST'))['segments']))")"
+echo "  Labels: $SHOW_LABELS"
+echo "  Voiceover: ${VOICEOVER_DIR:-none}"
 echo "  Output: $OUTPUT"
 
 cd "$RENDERER_DIR"
@@ -56,8 +100,9 @@ npx remotion render src/index.ts ViolenceHighlights "$OUTPUT" \
   --codec=h264 \
   --crf=21
 
-# Cleanup symlink
+# Cleanup symlinks
 rm -f "$RENDERER_DIR/public/source.mp4"
+rm -rf "$RENDERER_DIR/public/voiceover"
 
 echo ""
 echo "Done: $OUTPUT"
