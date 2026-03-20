@@ -28,19 +28,20 @@ VIDEO_DIR = os.environ.get("VIDEO_DIR", "./videos")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./highlights")
 SAMPLE_FPS = 2  # frames per second to analyze
 CLIP_MODEL = "openai/clip-vit-large-patch14"
-WINDOW_SEC = int(os.environ.get("WINDOW_SEC", "8"))
-TOP_N = int(os.environ.get("TOP_N", "10"))
-AUDIO_WEIGHT = 0.4
-CLIP_WEIGHT = 0.6
+WINDOW_SEC = int(os.environ.get("WINDOW_SEC", "15"))
+TOP_N = int(os.environ.get("TOP_N", "20"))
+AUDIO_WEIGHT = 0.5
+CLIP_WEIGHT = 0.5
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Text prompts for CLIP scoring
 POSITIVE_PROMPTS = [
-    "a screenshot of an intense gunfight in a video game",
-    "shooting guns with muzzle flash and explosions",
-    "a third person shooter combat scene with gunfire",
-    "a violent shootout battle in a western game",
-    "firing a rifle or revolver at enemies in a game",
+    "a gunfight with muzzle flash and smoke from a gun barrel",
+    "shooting a revolver or rifle at enemies with bullet impact",
+    "an intense shootout with multiple gunshots being fired",
+    "aiming down sights and firing a weapon in a western game",
+    "a gun battle with enemies being shot and falling down",
+    "rapid gunfire with muzzle flash lighting up the scene",
 ]
 
 NEGATIVE_PROMPTS = [
@@ -48,7 +49,9 @@ NEGATIVE_PROMPTS = [
     "a loading screen",
     "a character walking calmly in nature",
     "a map or inventory screen",
-    "a cutscene with characters talking",
+    "a cutscene with characters talking quietly",
+    "riding a horse peacefully through the countryside",
+    "standing still looking at scenery",
 ]
 
 
@@ -157,6 +160,29 @@ def extract_clip(video_path: str, start_sec: float, duration: float, output_path
     )
 
 
+def concatenate_clips(clip_paths: list[str], output_path: str):
+    """Join multiple clips into a single video using ffmpeg concat demuxer."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        for p in clip_paths:
+            f.write(f"file '{p}'\n")
+        list_path = f.name
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", list_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "21",
+                "-c:a", "aac", "-b:a", "192k",
+                output_path,
+            ],
+            capture_output=True, check=True,
+        )
+    finally:
+        os.unlink(list_path)
+
+
 def process_video(
     video_path: str,
     model: CLIPModel,
@@ -223,74 +249,111 @@ def process_video(
     return segments
 
 
-def main():
+def main(compile_only=False):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Find all videos
-    video_files = sorted([
-        os.path.join(VIDEO_DIR, f)
-        for f in os.listdir(VIDEO_DIR)
-        if f.endswith(".mp4")
-    ])
-    print(f"Found {len(video_files)} videos\n")
+    if not compile_only:
+        # Find all videos
+        video_files = sorted([
+            os.path.join(VIDEO_DIR, f)
+            for f in os.listdir(VIDEO_DIR)
+            if f.endswith(".mp4")
+        ])
+        print(f"Found {len(video_files)} videos\n")
 
-    # Load CLIP model
-    print(f"Loading CLIP model ({CLIP_MODEL})...")
-    model = CLIPModel.from_pretrained(CLIP_MODEL).to(DEVICE)
-    processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
-    model.eval()
+        # Load CLIP model
+        print(f"Loading CLIP model ({CLIP_MODEL})...")
+        model = CLIPModel.from_pretrained(CLIP_MODEL).to(DEVICE)
+        processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
+        model.eval()
 
-    # Pre-encode text prompts
-    print("Encoding text prompts...")
-    with torch.no_grad():
-        pos_inputs = processor(text=POSITIVE_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
-        pos_out = model.get_text_features(**pos_inputs)
-        pos_features = pos_out if isinstance(pos_out, torch.Tensor) else pos_out.pooler_output
-        pos_features = pos_features / pos_features.norm(dim=-1, keepdim=True)
+        # Pre-encode text prompts
+        print("Encoding text prompts...")
+        with torch.no_grad():
+            pos_inputs = processor(text=POSITIVE_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
+            pos_out = model.get_text_features(**pos_inputs)
+            pos_features = pos_out if isinstance(pos_out, torch.Tensor) else pos_out.pooler_output
+            pos_features = pos_features / pos_features.norm(dim=-1, keepdim=True)
 
-        neg_inputs = processor(text=NEGATIVE_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
-        neg_out = model.get_text_features(**neg_inputs)
-        neg_features = neg_out if isinstance(neg_out, torch.Tensor) else neg_out.pooler_output
-        neg_features = neg_features / neg_features.norm(dim=-1, keepdim=True)
+            neg_inputs = processor(text=NEGATIVE_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
+            neg_out = model.get_text_features(**neg_inputs)
+            neg_features = neg_out if isinstance(neg_out, torch.Tensor) else neg_out.pooler_output
+            neg_features = neg_features / neg_features.norm(dim=-1, keepdim=True)
 
-    print(f"Model loaded on {DEVICE}\n")
+        print(f"Model loaded on {DEVICE}\n")
 
-    # Process all videos
-    all_segments = []
-    for i, vpath in enumerate(video_files):
-        print(f"[{i+1}/{len(video_files)}] {Path(vpath).name}")
-        try:
-            segs = process_video(vpath, model, processor, pos_features, neg_features)
-            all_segments.extend(segs)
-            print(f"  Found {len(segs)} candidate moments\n")
-        except Exception as e:
-            print(f"  ERROR: {e}\n")
+        # Process all videos
+        all_segments = []
+        for i, vpath in enumerate(video_files):
+            print(f"[{i+1}/{len(video_files)}] {Path(vpath).name}")
+            try:
+                segs = process_video(vpath, model, processor, pos_features, neg_features)
+                all_segments.extend(segs)
+                print(f"  Found {len(segs)} candidate moments\n")
+            except Exception as e:
+                print(f"  ERROR: {e}\n")
 
-    # Rank by hybrid score and take top N
-    all_segments.sort(key=lambda x: x["score"], reverse=True)
-    top = all_segments[:TOP_N]
+        # Rank by hybrid score and take top N
+        all_segments.sort(key=lambda x: x["score"], reverse=True)
+        top = all_segments[:TOP_N]
 
-    print(f"\n{'='*60}")
-    print(f"Top {len(top)} highlights:")
-    print(f"{'='*60}")
+        print(f"\n{'='*60}")
+        print(f"Top {len(top)} highlights:")
+        print(f"{'='*60}")
 
-    for i, seg in enumerate(top):
-        start = max(0, seg["time_sec"] - WINDOW_SEC / 2)
-        print(
-            f"  #{i+1}: {seg['video_name']} @ {seg['time_sec']:.1f}s "
-            f"(score={seg['score']:.3f}, clip={seg['clip_score']:.3f}, audio={seg['audio_score']:.3f})"
+        clip_paths = []
+        for i, seg in enumerate(top):
+            start = max(0, seg["time_sec"] - WINDOW_SEC / 2)
+            print(
+                f"  #{i+1}: {seg['video_name']} @ {seg['time_sec']:.1f}s "
+                f"(score={seg['score']:.3f}, clip={seg['clip_score']:.3f}, audio={seg['audio_score']:.3f})"
+            )
+
+            output_file = os.path.join(OUTPUT_DIR, f"highlight_{i+1:02d}.mp4")
+            print(f"       Extracting {WINDOW_SEC}s clip -> {output_file}")
+            extract_clip(seg["video"], start, WINDOW_SEC, output_file)
+            clip_paths.append(output_file)
+
+        # Save metadata
+        meta_path = os.path.join(OUTPUT_DIR, "highlights.json")
+        with open(meta_path, "w") as f:
+            json.dump(top, f, indent=2)
+        print(f"\nMetadata saved to {meta_path}")
+        print(f"Clips saved to {OUTPUT_DIR}/")
+    else:
+        # Compile-only mode: find existing clips
+        clip_paths = sorted([
+            os.path.join(OUTPUT_DIR, f)
+            for f in os.listdir(OUTPUT_DIR)
+            if f.startswith("highlight_") and f.endswith(".mp4")
+        ])
+        print(f"Found {len(clip_paths)} existing highlight clips")
+
+    # Concatenate all clips into a compilation
+    if clip_paths:
+        # Sort clips chronologically by source video timestamp for a natural flow
+        meta_path = os.path.join(OUTPUT_DIR, "highlights.json")
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            # Re-sort clips by source video name + timestamp for chronological order
+            indexed = []
+            for i, seg in enumerate(meta):
+                clip_file = os.path.join(OUTPUT_DIR, f"highlight_{i+1:02d}.mp4")
+                if os.path.exists(clip_file):
+                    indexed.append((seg["video_name"], seg["time_sec"], clip_file))
+            indexed.sort(key=lambda x: (x[0], x[1]))
+            clip_paths = [x[2] for x in indexed]
+
+        compilation_path = os.path.join(OUTPUT_DIR, "compilation.mp4")
+        print(f"\nJoining {len(clip_paths)} clips into compilation...")
+        concatenate_clips(clip_paths, compilation_path)
+        total_dur = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", compilation_path],
+            capture_output=True, text=True,
         )
-
-        output_file = os.path.join(OUTPUT_DIR, f"highlight_{i+1:02d}.mp4")
-        print(f"       Extracting {WINDOW_SEC}s clip -> {output_file}")
-        extract_clip(seg["video"], start, WINDOW_SEC, output_file)
-
-    # Save metadata
-    meta_path = os.path.join(OUTPUT_DIR, "highlights.json")
-    with open(meta_path, "w") as f:
-        json.dump(top, f, indent=2)
-    print(f"\nMetadata saved to {meta_path}")
-    print(f"Clips saved to {OUTPUT_DIR}/")
+        dur = float(total_dur.stdout.strip())
+        print(f"Compilation saved: {compilation_path} ({dur:.0f}s / {dur/60:.1f}min)")
 
 
 if __name__ == "__main__":
@@ -300,6 +363,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", help="Output directory for highlight clips")
     parser.add_argument("-n", "--top-n", type=int, help="Number of top highlights to extract")
     parser.add_argument("-w", "--window", type=int, help="Duration of each highlight clip in seconds")
+    parser.add_argument("--compile", action="store_true", help="Only join existing clips into compilation (skip detection)")
     args = parser.parse_args()
 
     if args.video_dir:
@@ -311,4 +375,4 @@ if __name__ == "__main__":
     if args.window:
         WINDOW_SEC = args.window
 
-    main()
+    main(compile_only=args.compile)
