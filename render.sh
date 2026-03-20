@@ -45,15 +45,16 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
-# Symlink source video into renderer/public/ so Remotion can serve it
+# Copy source video into renderer/public/ so Remotion can bundle it
+# (symlinks don't survive Remotion's webpack bundling to temp dir)
 mkdir -p "$RENDERER_DIR/public"
-ln -sf "$SOURCE" "$RENDERER_DIR/public/source.mp4"
+cp -f "$SOURCE" "$RENDERER_DIR/public/source.mp4"
 
-# Symlink voiceover files if provided
+# Copy voiceover files if provided
 if [ -n "$VOICEOVER_DIR" ] && [ -d "$VOICEOVER_DIR" ]; then
   mkdir -p "$RENDERER_DIR/public/voiceover"
   for wav in "$VOICEOVER_DIR"/*.wav; do
-    [ -f "$wav" ] && ln -sf "$(realpath "$wav")" "$RENDERER_DIR/public/voiceover/$(basename "$wav")"
+    [ -f "$wav" ] && cp -f "$wav" "$RENDERER_DIR/public/voiceover/$(basename "$wav")"
   done
 fi
 
@@ -100,7 +101,7 @@ npx remotion render src/index.ts ViolenceHighlights "$OUTPUT" \
   --codec=h264 \
   --crf=21
 
-# Cleanup symlinks
+# Cleanup copied files
 rm -f "$RENDERER_DIR/public/source.mp4"
 rm -rf "$RENDERER_DIR/public/voiceover"
 
