@@ -5,6 +5,7 @@ import { fade } from "@remotion/transitions/fade";
 import { Video } from "@remotion/media";
 import { SegmentLabel } from "./SegmentLabel";
 import { KenBurns } from "./KenBurns";
+import { SegmentSFX } from "./SoundEffects";
 import type { ViolenceHighlightsProps, Segment } from "./types";
 
 const TRANSITION_FRAMES = 10; // ~0.33s fade between segments
@@ -67,6 +68,7 @@ export const ViolenceHighlights: React.FC<ViolenceHighlightsProps> = ({
             />
           </KenBurns>
           {showLabels && <SegmentLabel label={seg.label} />}
+          <SegmentSFX score={seg.score} durationInFrames={durationInFrames} />
         </AbsoluteFill>
       </TransitionSeries.Sequence>,
     );
