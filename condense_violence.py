@@ -62,28 +62,49 @@ VIOLENCE_AUDIO_LABELS = {
     38:  "Groan",
     298: "Fire",
     458: "Arrow",
+    429: "Cap gun",
+    431: "Fusillade",
+    471: "Crushing",
+    473: "Thud",
+    143: "Horse gallop",
 }
 
 POSITIVE_PROMPTS = [
+    # Gunfights
     "a gunfight with muzzle flash and smoke from a gun barrel",
     "shooting a revolver or rifle at enemies with bullet impact",
     "an intense shootout with multiple gunshots being fired",
-    "a fistfight with punching and kicking",
-    "a violent melee brawl with people fighting",
-    "an explosion with fire and debris flying",
+    "a Dead Eye slow motion shooting sequence in a western game",
+    # Melee combat
+    "a fistfight with punching and kicking in a western game",
+    "a violent melee brawl with people fighting on the ground",
+    "a lasso takedown of an enemy being pulled off a horse",
+    "tackling someone to the ground in a violent struggle",
+    # Weapons and explosions
+    "an explosion with fire and debris flying through the air",
+    "throwing dynamite that explodes with a large blast",
+    "a knife fight or stabbing attack in close combat",
+    # Chases and action
+    "a high speed horse chase with gunfire and pursuit",
+    "a dramatic shootout from behind cover with enemies",
+    "a train robbery with intense action and shooting",
+    # Dramatic moments
     "a person being beaten or attacked violently",
-    "a knife fight or stabbing in a video game",
+    "a dramatic standoff or duel in a western setting",
 ]
 
 NEGATIVE_PROMPTS = [
     "a pause menu or settings screen",
-    "a loading screen",
+    "a loading screen or black screen",
     "a character walking calmly in nature",
-    "a map or inventory screen",
+    "a map or inventory or radial wheel screen",
     "a cutscene with characters talking quietly",
     "riding a horse peacefully through the countryside",
-    "standing still looking at scenery",
-    "a shop or store interface",
+    "standing still looking at scenery or landscape",
+    "a shop or store or catalog interface",
+    "a character crafting or cooking at a campfire",
+    "fishing by a river or lake peacefully",
+    "a grayscale desaturated menu overlay",
 ]
 
 
