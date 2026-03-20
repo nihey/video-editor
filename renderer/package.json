@@ -1,0 +1,21 @@
+{
+  "name": "video-editor-renderer",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts ViolenceHighlights"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.438",
+    "@remotion/media": "^4.0.438",
+    "@remotion/transitions": "^4.0.438",
+    "remotion": "^4.0.438",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
