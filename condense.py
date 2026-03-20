@@ -16,7 +16,7 @@ from pathlib import Path
 os.environ["PYTHONUNBUFFERED"] = "1"
 
 import numpy as np
-from scipy.ndimage import maximum_filter1d
+from scipy.ndimage import uniform_filter1d, median_filter
 from scipy.signal import find_peaks
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -49,58 +49,54 @@ def extract_audio(video_path: str, rate: int = AUDIO_RATE) -> np.ndarray:
 
 def detect_gunshots(audio: np.ndarray, rate: int = AUDIO_RATE) -> list[dict]:
     """
-    Detect gunshot transients using spectral flux onset detection.
-    Gunshots have extremely fast attack (< 5ms) and high energy in upper frequencies.
-    Returns list of {time_sec, strength} dicts.
+    Detect gunshot transients via onset detection with adaptive thresholding.
+    Returns list of {time_sec, strength} dicts with no overlapping regions.
     """
-    # 1. Compute short-time energy in small windows (10ms)
-    win_samples = int(rate * 0.01)  # 10ms windows
-    hop = win_samples // 2          # 5ms hop
+    # 1. Short-time energy in 10ms windows, 5ms hop
+    win_samples = int(rate * 0.01)
+    hop = win_samples // 2
 
     n_windows = (len(audio) - win_samples) // hop
     if n_windows <= 0:
         return []
 
-    # Energy per window
     energy = np.zeros(n_windows)
     for i in range(n_windows):
-        start = i * hop
-        chunk = audio[start : start + win_samples]
-        energy[i] = np.sum(chunk ** 2)
+        s = i * hop
+        energy[i] = np.sum(audio[s : s + win_samples] ** 2)
 
-    # 2. Compute onset strength: positive first derivative of energy (attack detection)
-    onset_env = np.diff(energy)
-    onset_env = np.maximum(onset_env, 0)  # only positive changes (attacks)
-
-    # 3. High-pass emphasis: gunshots have more high-frequency content
-    # Apply simple differentiation again to emphasize sharp transients
-    onset_sharp = np.diff(onset_env)
-    onset_sharp = np.maximum(onset_sharp, 0)
-
-    # 4. Adaptive threshold: peak must be well above local median
-    if len(onset_sharp) < 100:
+    # 2. Onset strength: positive energy derivative (attack)
+    onset_env = np.maximum(np.diff(energy), 0)
+    if len(onset_env) < 100:
         return []
 
-    # Smooth for peak detection
-    kernel = max(3, int(0.05 * rate / hop))  # 50ms kernel
-    onset_smooth = maximum_filter1d(onset_sharp, size=kernel)
+    # 3. Adaptive threshold: subtract local median to ignore sustained loud sections
+    #    (music, ambient noise). Only sharp spikes above local background remain.
+    median_win = int(0.5 * rate / hop)  # 500ms median window
+    local_median = median_filter(onset_env, size=median_win)
+    onset_adapted = np.maximum(onset_env - local_median, 0)
 
-    # Find peaks
+    # 4. Light smoothing (NOT max-filter which creates plateaus)
+    smooth_win = max(3, int(0.02 * rate / hop))  # 20ms gaussian-like
+    onset_smooth = uniform_filter1d(onset_adapted, size=smooth_win)
+
+    # 5. Find peaks with strong constraints
     min_distance = int(MIN_GAP_SEC * rate / hop)
-    threshold = np.percentile(onset_smooth, 95)  # top 5% of transients
+    threshold = np.percentile(onset_smooth[onset_smooth > 0], 85) if np.any(onset_smooth > 0) else 0
+    if threshold <= 0:
+        return []
 
     peaks, props = find_peaks(
         onset_smooth,
         height=threshold,
         distance=min_distance,
-        prominence=threshold * 0.3,
+        prominence=threshold * 0.5,
     )
 
     shots = []
     for peak in peaks:
         t_sec = (peak * hop) / rate
-        strength = float(onset_smooth[peak])
-        shots.append({"time_sec": t_sec, "strength": strength})
+        shots.append({"time_sec": t_sec, "strength": float(onset_smooth[peak])})
 
     return shots
 
@@ -198,33 +194,51 @@ def main():
         else:
             norm_strengths = np.ones_like(strengths)
 
-        # Extract micro-clips: stronger transients get longer clips
-        extracted = 0
+        # Build time ranges and merge overlapping ones
+        ranges = []
         for j, shot in enumerate(shots):
             t = shot["time_sec"]
-            # Scale duration by strength: stronger = longer clip
             clip_dur = min_clip + norm_strengths[j] * (max_clip - min_clip)
-            start = t - PAD_BEFORE
-            # Clamp to video bounds
-            start = max(0, min(start, duration - clip_dur))
+            start = max(0, t - PAD_BEFORE)
+            end = min(duration - 0.1, start + clip_dur)  # stay 100ms from video end
+            start = max(0, end - clip_dur)  # re-adjust start if end was clamped
+            strength = float(norm_strengths[j])
+            ranges.append((start, end, strength))
 
+        # Sort by start time and merge overlapping ranges
+        ranges.sort(key=lambda r: r[0])
+        merged = [ranges[0]]
+        for start, end, strength in ranges[1:]:
+            prev_start, prev_end, prev_strength = merged[-1]
+            if start < prev_end:
+                # Overlapping: merge, keep the stronger strength
+                merged[-1] = (prev_start, max(prev_end, end), max(prev_strength, strength))
+            else:
+                merged.append((start, end, strength))
+
+        # Skip clips that start in the last 0.5s (too close to end, causes glitches)
+        merged = [(s, e, st) for s, e, st in merged if s < duration - 0.5]
+
+        # Extract micro-clips from merged ranges
+        extracted = 0
+        for j, (start, end, strength) in enumerate(merged):
+            clip_dur = end - start
             out_path = os.path.join(tmpdir, f"micro_{i:03d}_{j:03d}.mp4")
             try:
                 extract_microclip(clip_path, start, clip_dur, out_path)
-                # Verify the file is valid (sometimes very short clips fail)
                 if os.path.getsize(out_path) > 1000:
                     all_microclips.append({
                         "path": out_path,
                         "source": name,
-                        "time": t,
+                        "time": start,
                         "duration": clip_dur,
-                        "strength": float(norm_strengths[j]),
+                        "strength": strength,
                     })
                     extracted += 1
             except subprocess.CalledProcessError:
                 pass
 
-        print(f" -> extracted {extracted} micro-clips")
+        print(f" -> {len(merged)} merged ranges -> extracted {extracted} micro-clips")
 
     print(f"\nTotal micro-clips: {len(all_microclips)}")
 
