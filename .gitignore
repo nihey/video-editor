@@ -1,0 +1,5 @@
+highlights/
+__pycache__/
+*.pyc
+.env
+*.wav
