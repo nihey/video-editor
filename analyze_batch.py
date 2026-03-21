@@ -398,15 +398,18 @@ def build_annotated_compilation(results, output_dir):
     for i, clip in enumerate(all_clips):
         out = os.path.join(tmpdir, f"clip_{i:04d}.mp4")
         reason_text = clip["reasons"][0][:40] if clip["reasons"] else "combined signals"
-        # Escape special chars for ffmpeg drawtext
-        reason_text = reason_text.replace("'", "").replace(":", " -").replace("(", "").replace(")", "")
 
-        annotation = (
-            f"[{clip['label']}] Score: {clip['score']:.2f} | "
-            f"Audio: {clip['panns_score']:.2f} Visual: {clip['clip_score']:.2f} Motion: {clip['flow_score']:.2f}"
-        )
-        source_text = f"Source: {clip['source_name'][-20:]}"
-        why_text = f"Why: {reason_text}"
+        # Write text lines to temp files to avoid ffmpeg drawtext escaping issues
+        line1 = f"[{clip['label']}] Score: {clip['score']:.2f} | Audio: {clip['panns_score']:.2f} Visual: {clip['clip_score']:.2f} Motion: {clip['flow_score']:.2f}"
+        line2 = f"Source: {clip['source_name'][-20:]}"
+        line3 = f"Why: {reason_text}"
+
+        tf1 = os.path.join(tmpdir, f"t1_{i:04d}.txt")
+        tf2 = os.path.join(tmpdir, f"t2_{i:04d}.txt")
+        tf3 = os.path.join(tmpdir, f"t3_{i:04d}.txt")
+        for path, text in [(tf1, line1), (tf2, line2), (tf3, line3)]:
+            with open(path, "w") as tf:
+                tf.write(text)
 
         try:
             subprocess.run([
@@ -415,9 +418,9 @@ def build_annotated_compilation(results, output_dir):
                 "-i", clip["source_file"],
                 "-t", f"{clip['duration']:.3f}",
                 "-vf", (
-                    f"drawtext=text='{annotation}':fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=10:y=10,"
-                    f"drawtext=text='{source_text}':fontsize=20:fontcolor=#aaaaaa:borderw=1:bordercolor=black:x=10:y=45,"
-                    f"drawtext=text='{why_text}':fontsize=22:fontcolor=#ffcc00:borderw=2:bordercolor=black:x=10:y=75"
+                    f"drawtext=textfile='{tf1}':fontsize=24:fontcolor=white:borderw=2:bordercolor=black:x=10:y=10,"
+                    f"drawtext=textfile='{tf2}':fontsize=20:fontcolor=#aaaaaa:borderw=1:bordercolor=black:x=10:y=45,"
+                    f"drawtext=textfile='{tf3}':fontsize=22:fontcolor=#ffcc00:borderw=2:bordercolor=black:x=10:y=75"
                 ),
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                 "-c:a", "aac", "-b:a", "128k",

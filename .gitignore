@@ -1,5 +1,6 @@
 highlights/
 highlights_violence/
+highlights_batch/
 __pycache__/
 *.pyc
 .env
