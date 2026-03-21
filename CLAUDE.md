@@ -122,6 +122,27 @@ builds props JSON, invokes `npx remotion render`.
 - **Remotion for rendering**: React components give flexibility for effects, transitions, overlays
 - **Score-driven effects**: Ken Burns zoom, SFX volume, narration intensity all scale with violence score
 
+## Telegram Delivery
+
+Videos can be sent to the user via Telegram bot. Credentials are in `.env` (gitignored):
+
+```bash
+# .env contains:
+# TELEGRAM_BOT_TOKEN=<bot token>
+# TELEGRAM_USER_ID=<user chat id>
+
+# Send a video (must be <50MB, compress if needed):
+source .env
+curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+  -F "chat_id=${TELEGRAM_USER_ID}" \
+  -F "video=@path/to/video.mp4" \
+  -F "caption=Description" \
+  -F "supports_streaming=true"
+
+# For large files (>50MB), compress first:
+ffmpeg -i input.mp4 -c:v libx264 -crf 28 -vf "scale=1280:720" -c:a aac -b:a 128k output_telegram.mp4
+```
+
 ## Development
 
 ```bash
