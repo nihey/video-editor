@@ -8,6 +8,8 @@ import { KenBurns } from "./KenBurns";
 import { ColorGrade } from "./ColorGrade";
 import { SegmentSFX } from "./SoundEffects";
 import { Voiceover } from "./Voiceover";
+import { ActionOverlay, ScoreIndicator } from "./ActionOverlay";
+import { ProgressBar } from "./ProgressBar";
 import type { ViolenceHighlightsProps, Segment } from "./types";
 
 const TRANSITION_FRAMES = 10; // ~0.33s fade between segments
@@ -75,6 +77,8 @@ export const ViolenceHighlights: React.FC<ViolenceHighlightsProps> = ({
               />
             </KenBurns>
           </ColorGrade>
+          <ActionOverlay score={seg.score} label={seg.label} />
+          <ScoreIndicator score={seg.score} />
           {showLabels && <SegmentLabel label={seg.label} />}
           <SegmentSFX score={seg.score} durationInFrames={durationInFrames} />
           {voiceoverMap.has(seg.label) && (
@@ -88,6 +92,7 @@ export const ViolenceHighlights: React.FC<ViolenceHighlightsProps> = ({
   return (
     <AbsoluteFill style={{ backgroundColor: "#000" }}>
       <TransitionSeries>{children}</TransitionSeries>
+      <ProgressBar />
     </AbsoluteFill>
   );
 };

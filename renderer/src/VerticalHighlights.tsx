@@ -7,6 +7,8 @@ import { SegmentLabel } from "./SegmentLabel";
 import { SegmentSFX } from "./SoundEffects";
 import { Voiceover } from "./Voiceover";
 import { ColorGrade } from "./ColorGrade";
+import { ActionOverlay, ScoreIndicator } from "./ActionOverlay";
+import { ProgressBar } from "./ProgressBar";
 import type { ViolenceHighlightsProps, Segment } from "./types";
 
 const TRANSITION_FRAMES = 10;
@@ -38,29 +40,30 @@ export const calculateVerticalMetadata: CalculateMetadataFunction<
 const VerticalKenBurns: React.FC<{
   children: React.ReactNode;
   score: number;
-}> = ({ children, score }) => {
+  /** Focal point X (0=left, 0.5=center, 1=right) from motion analysis */
+  focalX?: number;
+}> = ({ children, score, focalX = 0.5 }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
   const normalizedScore = Math.min(1, Math.max(0, (score - 0.3) / 0.4));
 
-  // Zoom: vertical needs more zoom to fill the frame interestingly
-  const maxZoom = 1 + 0.2 * normalizedScore;
-
+  // Zoom
+  const maxZoom = 1 + 0.25 * normalizedScore;
   const punchIn =
     normalizedScore > 0.5
       ? spring({
           frame,
           fps,
-          config: { damping: 15, stiffness: 80, mass: 0.8 },
-          durationInFrames: Math.min(fps * 1.5, durationInFrames),
+          config: { damping: 12, stiffness: 100, mass: 0.6 },
+          durationInFrames: Math.min(fps * 1, durationInFrames),
         })
       : 0;
 
   const creepZoom = interpolate(
     frame,
     [0, durationInFrames],
-    [1, 1 + 0.08 * normalizedScore],
+    [1, 1 + 0.1 * normalizedScore],
     { extrapolateRight: "clamp" },
   );
 
@@ -69,14 +72,20 @@ const VerticalKenBurns: React.FC<{
       ? interpolate(punchIn, [0, 1], [1, maxZoom])
       : creepZoom;
 
-  // More aggressive horizontal pan for vertical — sweep across the wide source
-  // This makes the vertical version feel alive instead of a static center crop
+  // Smart horizontal offset based on focal point detection
+  // focalX=0.3 means action is left-of-center, pan left to show it
+  // Convert focal_x (0-1) to translate offset (% of frame)
+  // In vertical crop we see ~56% of the horizontal frame (9/16),
+  // so we have ~22% on each side to shift
+  const focalOffset = (focalX - 0.5) * -18; // shift opposite to focal point
+
+  // Drift adds motion on top of the focal offset
   const driftDirection = score > 0.45 ? 1 : -1;
-  const driftAmount = 4 * normalizedScore; // up to 4% horizontal sweep
-  const translateX = interpolate(
+  const driftAmount = 3 * normalizedScore;
+  const translateX = focalOffset + interpolate(
     frame,
     [0, durationInFrames],
-    [-driftAmount * 0.5 * driftDirection, driftAmount * 0.5 * driftDirection],
+    [-driftAmount * 0.3 * driftDirection, driftAmount * 0.3 * driftDirection],
     { extrapolateRight: "clamp" },
   );
 
@@ -145,7 +154,7 @@ export const VerticalHighlights: React.FC<ViolenceHighlightsProps> = ({
       >
         <AbsoluteFill>
           <ColorGrade>
-            <VerticalKenBurns score={seg.score}>
+            <VerticalKenBurns score={seg.score} focalX={seg.focal_x}>
               {/* Scale video to fill vertical frame width — this crops top/bottom */}
               <Video
                 src={staticFile(source)}
@@ -159,6 +168,8 @@ export const VerticalHighlights: React.FC<ViolenceHighlightsProps> = ({
               />
             </VerticalKenBurns>
           </ColorGrade>
+          <ActionOverlay score={seg.score} label={seg.label} />
+          <ScoreIndicator score={seg.score} />
           {showLabels && <SegmentLabel label={seg.label} />}
           <SegmentSFX score={seg.score} durationInFrames={durationInFrames} />
           {voiceoverMap.has(seg.label) && (
@@ -172,6 +183,7 @@ export const VerticalHighlights: React.FC<ViolenceHighlightsProps> = ({
   return (
     <AbsoluteFill style={{ backgroundColor: "#000" }}>
       <TransitionSeries>{children}</TransitionSeries>
+      <ProgressBar />
     </AbsoluteFill>
   );
 };
