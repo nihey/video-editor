@@ -307,6 +307,10 @@ def main():
                         help=f"Merge clips within this gap in seconds (default: {MERGE_GAP_SEC})")
     parser.add_argument("--percentile", type=float, default=SCORE_PERCENTILE,
                         help=f"Include peaks above this score percentile (default: {SCORE_PERCENTILE})")
+    parser.add_argument("--pad-before", type=float, default=PAD_BEFORE,
+                        help=f"Seconds before peak (default: {PAD_BEFORE})")
+    parser.add_argument("--pad-after", type=float, default=PAD_AFTER,
+                        help=f"Seconds after peak (default: {PAD_AFTER})")
     args = parser.parse_args()
 
     input_path = args.input
@@ -325,6 +329,8 @@ def main():
     max_clip = args.max_clip
     merge_gap = args.merge_gap
     score_pct = args.percentile
+    pad_before = args.pad_before
+    pad_after = args.pad_after
 
     video_duration = get_video_duration(input_path)
     print(f"Input: {input_path} ({video_duration:.1f}s)")
@@ -437,7 +443,7 @@ def main():
         norm_score = (score - peak_scores.min()) / (peak_scores.max() - peak_scores.min() + 1e-8)
         clip_dur = min_clip + norm_score * (max_clip - min_clip)
 
-        start = max(0, t_sec - PAD_BEFORE - clip_dur * 0.3)
+        start = max(0, t_sec - pad_before - clip_dur * 0.3)
         end = min(video_duration - 0.05, start + clip_dur)
         start = max(0, end - clip_dur)
 
