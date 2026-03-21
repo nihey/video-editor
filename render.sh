@@ -11,11 +11,14 @@ MANIFEST=""
 OUTPUT=""
 SHOW_LABELS=true
 VOICEOVER_DIR=""
+VERTICAL=false
+COMPOSITION="ViolenceHighlights"
 
 # Parse args
 while [[ $# -gt 0 ]]; do
   case $1 in
     --no-labels) SHOW_LABELS=false; shift ;;
+    --vertical) VERTICAL=true; COMPOSITION="VerticalHighlights"; shift ;;
     --voiceover) VOICEOVER_DIR="$2"; shift 2 ;;
     *)
       if [ -z "$MANIFEST" ]; then MANIFEST="$1"
@@ -26,7 +29,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -z "$MANIFEST" ]; then
-  echo "Usage: ./render.sh <manifest.json> [output.mp4] [--no-labels] [--voiceover <dir>]"
+  echo "Usage: ./render.sh <manifest.json> [output.mp4] [--no-labels] [--vertical] [--voiceover <dir>]"
   exit 1
 fi
 
@@ -83,8 +86,10 @@ json.dump(m, sys.stdout)
 
 echo "Rendering with Remotion..."
 echo "  Source: $SOURCE"
+echo "  Composition: $COMPOSITION"
 echo "  Segments: $(python3 -c "import json; print(len(json.load(open('$MANIFEST'))['segments']))")"
 echo "  Labels: $SHOW_LABELS"
+echo "  Vertical: $VERTICAL"
 echo "  Voiceover: ${VOICEOVER_DIR:-none}"
 echo "  Output: $OUTPUT"
 
@@ -96,7 +101,7 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # Render
-npx remotion render src/index.ts ViolenceHighlights "$OUTPUT" \
+npx remotion render src/index.ts "$COMPOSITION" "$OUTPUT" \
   --props="$PROPS" \
   --codec=h264 \
   --crf=21
