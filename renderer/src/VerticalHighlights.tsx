@@ -6,6 +6,7 @@ import { Video } from "@remotion/media";
 import { SegmentLabel } from "./SegmentLabel";
 import { SegmentSFX } from "./SoundEffects";
 import { Voiceover } from "./Voiceover";
+import { ColorGrade } from "./ColorGrade";
 import type { ViolenceHighlightsProps, Segment } from "./types";
 
 const TRANSITION_FRAMES = 10;
@@ -143,19 +144,21 @@ export const VerticalHighlights: React.FC<ViolenceHighlightsProps> = ({
         durationInFrames={durationInFrames}
       >
         <AbsoluteFill>
-          <VerticalKenBurns score={seg.score}>
-            {/* Scale video to fill vertical frame width — this crops top/bottom */}
-            <Video
-              src={staticFile(source)}
-              trimBefore={trimBefore}
-              trimAfter={trimAfter}
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "cover",
-              }}
-            />
-          </VerticalKenBurns>
+          <ColorGrade>
+            <VerticalKenBurns score={seg.score}>
+              {/* Scale video to fill vertical frame width — this crops top/bottom */}
+              <Video
+                src={staticFile(source)}
+                trimBefore={trimBefore}
+                trimAfter={trimAfter}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                }}
+              />
+            </VerticalKenBurns>
+          </ColorGrade>
           {showLabels && <SegmentLabel label={seg.label} />}
           <SegmentSFX score={seg.score} durationInFrames={durationInFrames} />
           {voiceoverMap.has(seg.label) && (

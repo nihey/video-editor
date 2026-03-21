@@ -5,6 +5,7 @@ import { fade } from "@remotion/transitions/fade";
 import { Video } from "@remotion/media";
 import { SegmentLabel } from "./SegmentLabel";
 import { KenBurns } from "./KenBurns";
+import { ColorGrade } from "./ColorGrade";
 import { SegmentSFX } from "./SoundEffects";
 import { Voiceover } from "./Voiceover";
 import type { ViolenceHighlightsProps, Segment } from "./types";
@@ -64,14 +65,16 @@ export const ViolenceHighlights: React.FC<ViolenceHighlightsProps> = ({
         durationInFrames={durationInFrames}
       >
         <AbsoluteFill>
-          <KenBurns score={seg.score}>
-            <Video
-              src={staticFile(source)}
-              trimBefore={trimBefore}
-              trimAfter={trimAfter}
-              style={{ width: "100%", height: "100%" }}
-            />
-          </KenBurns>
+          <ColorGrade>
+            <KenBurns score={seg.score}>
+              <Video
+                src={staticFile(source)}
+                trimBefore={trimBefore}
+                trimAfter={trimAfter}
+                style={{ width: "100%", height: "100%" }}
+              />
+            </KenBurns>
+          </ColorGrade>
           {showLabels && <SegmentLabel label={seg.label} />}
           <SegmentSFX score={seg.score} durationInFrames={durationInFrames} />
           {voiceoverMap.has(seg.label) && (

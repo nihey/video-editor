@@ -3,15 +3,14 @@ import { useCurrentFrame, useVideoConfig, interpolate, spring } from "remotion";
 type KenBurnsProps = {
   children: React.ReactNode;
   score: number;
-  /** Zoom intensity: how much to zoom based on score (0-1 normalized) */
   intensity?: number;
 };
 
 /**
  * Score-driven Ken Burns effect.
- * - High-score segments: punch-in zoom at the start (action moment), then hold
+ * - High-score segments: fast spring punch-in zoom, then slow pull-back
  * - Medium-score: slow creeping zoom in throughout
- * - All segments: subtle drift to keep the frame alive
+ * - All segments: visible drift pan to keep the frame alive
  */
 export const KenBurns: React.FC<KenBurnsProps> = ({
   children,
@@ -21,56 +20,59 @@ export const KenBurns: React.FC<KenBurnsProps> = ({
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
-  // Normalize score to 0-1 range for zoom calculations
-  // Scores typically range 0.3-0.7, map to 0-1
-  const normalizedScore = Math.min(
-    1,
-    Math.max(0, (score - 0.3) / 0.4),
-  );
+  const normalizedScore = Math.min(1, Math.max(0, (score - 0.3) / 0.4));
 
-  // Base zoom: 1.0 (no zoom) to 1.15 (15% zoom) based on score
-  const maxZoom = 1 + 0.15 * normalizedScore * intensity;
+  // High-score: punch in to 1.35x then slowly pull back to 1.15x
+  // Medium: creep from 1.0 to 1.15x
+  // Low: creep from 1.0 to 1.08x
+  const punchTarget = 1 + 0.35 * normalizedScore * intensity;
+  const holdTarget = 1 + 0.15 * normalizedScore * intensity;
+  const creepTarget = 1 + 0.12 * Math.max(0.3, normalizedScore) * intensity;
 
-  // High-score segments get a spring punch-in at the start
-  const punchIn =
-    normalizedScore > 0.5
-      ? spring({
-          frame,
-          fps,
-          config: { damping: 15, stiffness: 80, mass: 0.8 },
-          durationInFrames: Math.min(fps * 1.5, durationInFrames),
-        })
-      : 0;
+  let zoom: number;
 
-  // Slow creep zoom throughout the segment
-  const creepZoom = interpolate(
-    frame,
-    [0, durationInFrames],
-    [1, 1 + 0.05 * normalizedScore * intensity],
-    { extrapolateRight: "clamp" },
-  );
+  if (normalizedScore > 0.5) {
+    // Punch in quickly, then slowly ease back
+    const punchPhase = spring({
+      frame,
+      fps,
+      config: { damping: 12, stiffness: 100, mass: 0.6 },
+      durationInFrames: Math.min(fps * 1, durationInFrames),
+    });
 
-  // Combine: punch-in brings to maxZoom quickly, creep adds subtle motion
-  const zoom = normalizedScore > 0.5
-    ? interpolate(punchIn, [0, 1], [1, maxZoom])
-    : creepZoom;
+    const pullBack = interpolate(
+      frame,
+      [fps * 0.8, durationInFrames],
+      [0, 1],
+      { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+    );
 
-  // Subtle horizontal drift (pan) for visual interest
-  // Direction alternates based on score to create variety
+    const punchedZoom = interpolate(punchPhase, [0, 1], [1, punchTarget]);
+    zoom = punchedZoom - pullBack * (punchTarget - holdTarget);
+  } else {
+    // Smooth creep zoom
+    zoom = interpolate(
+      frame,
+      [0, durationInFrames],
+      [1, creepTarget],
+      { extrapolateRight: "clamp" },
+    );
+  }
+
+  // Pan drift — visible movement across the frame
   const driftDirection = score > 0.45 ? 1 : -1;
-  const driftAmount = 1.5 * normalizedScore * intensity; // max 1.5% drift
+  const driftAmount = 3 * Math.max(0.3, normalizedScore) * intensity;
   const translateX = interpolate(
     frame,
     [0, durationInFrames],
-    [0, driftAmount * driftDirection],
+    [-driftAmount * 0.5 * driftDirection, driftAmount * 0.5 * driftDirection],
     { extrapolateRight: "clamp" },
   );
 
-  // Slight vertical drift
   const translateY = interpolate(
     frame,
     [0, durationInFrames],
-    [0, driftAmount * 0.5 * -driftDirection],
+    [driftAmount * 0.3 * driftDirection, -driftAmount * 0.3 * driftDirection],
     { extrapolateRight: "clamp" },
   );
 
