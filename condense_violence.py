@@ -434,18 +434,36 @@ def main():
 
     peak_scores = hybrid_smooth[peaks]
 
-    # Build a clip around each peak, duration proportional to score
+    # Build clips using score-decay: extend forward until action finishes
+    # instead of fixed padding. The clip ends when the score drops below
+    # a fraction of the peak, or max_clip is reached.
+    DECAY_THRESHOLD = 0.45  # extend until score drops below 45% of peak
     ranges = []
     for i, peak in enumerate(peaks):
         score = peak_scores[i]
         t_sec = peak / SAMPLE_FPS
 
-        norm_score = (score - peak_scores.min()) / (peak_scores.max() - peak_scores.min() + 1e-8)
-        clip_dur = min_clip + norm_score * (max_clip - min_clip)
+        # Start: fixed pad before the peak
+        start = max(0, t_sec - pad_before)
 
-        start = max(0, t_sec - pad_before - clip_dur * 0.3)
-        end = min(video_duration - 0.05, start + clip_dur)
-        start = max(0, end - clip_dur)
+        # End: scan forward from peak until score decays below threshold
+        decay_floor = score * DECAY_THRESHOLD
+        end_idx = peak
+        max_end_idx = min(len(hybrid_smooth) - 1, peak + int(max_clip * SAMPLE_FPS))
+        for j in range(peak + 1, max_end_idx + 1):
+            if hybrid_smooth[j] < decay_floor:
+                break
+            end_idx = j
+
+        # Add pad_after beyond the decay point to catch the aftermath
+        end = min(video_duration - 0.05, end_idx / SAMPLE_FPS + pad_after)
+
+        # Enforce min/max clip duration
+        clip_dur = end - start
+        if clip_dur < min_clip:
+            end = min(video_duration - 0.05, start + min_clip)
+        if clip_dur > max_clip:
+            end = start + max_clip
 
         ranges.append((start, end, score))
 
