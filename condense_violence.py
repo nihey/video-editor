@@ -28,14 +28,14 @@ from panns_inference import AudioTagging
 # ── Config ──────────────────────────────────────────────────────────────────
 SAMPLE_FPS = 2
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-TARGET_DURATION = 90.0     # target output length in seconds
-MIN_CLIP_SEC = 0.5
-MAX_CLIP_SEC = 5.0
-PAD_BEFORE = 0.5           # seconds before peak
-PAD_AFTER = 0.5            # seconds after peak
-MIN_GAP_SEC = 0.3          # minimum gap between peaks
-MERGE_GAP_SEC = 3.0        # merge clips within this gap (same scene)
-SCORE_PERCENTILE = 40      # include peaks above this percentile
+TARGET_DURATION = 120.0    # target output length in seconds
+MIN_CLIP_SEC = 3.0
+MAX_CLIP_SEC = 10.0
+PAD_BEFORE = 1.5           # seconds before peak (catch buildup)
+PAD_AFTER = 2.5            # seconds after peak (catch the payoff/kill)
+MIN_GAP_SEC = 0.5          # minimum gap between peaks
+MERGE_GAP_SEC = 2.0        # merge clips within this gap (same scene)
+SCORE_PERCENTILE = 45      # include peaks above this percentile
 
 # Signal weights
 PANNS_WEIGHT = 0.40
