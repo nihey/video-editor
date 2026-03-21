@@ -206,7 +206,7 @@ def compute_optical_flow(video_path, sample_fps):
     return np.array(flow_mags)
 
 
-def analyze_video(video_path, clip_model, clip_processor, pos_features, neg_features, at_model):
+def analyze_video(video_path, clip_model, clip_processor, pos_features, neg_features, at_model, top_n=TOP_N_PER_VIDEO):
     """Analyze a single video and return detailed scoring data."""
     name = Path(video_path).stem
     duration = get_video_duration(video_path)
@@ -258,7 +258,7 @@ def analyze_video(video_path, clip_model, clip_processor, pos_features, neg_feat
 
     # Build highlights with signal breakdown
     highlights = []
-    for peak in peaks[:TOP_N_PER_VIDEO]:
+    for peak in peaks[:top_n]:
         t_sec = peak / SAMPLE_FPS
         half_win = WINDOW_SEC / 2
         start = max(0, t_sec - half_win)
@@ -449,8 +449,7 @@ def main():
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    global TOP_N_PER_VIDEO
-    TOP_N_PER_VIDEO = args.top_n
+    top_n = args.top_n
 
     # Find video files
     video_exts = {".mp4", ".mkv", ".avi", ".mov", ".webm"}
@@ -492,7 +491,7 @@ def main():
         try:
             result = analyze_video(
                 video_path, clip_model, clip_processor,
-                pos_features, neg_features, at_model,
+                pos_features, neg_features, at_model, top_n=top_n,
             )
             results.append(result)
             print(f"  Rating: {result['violence_rating']} | "
