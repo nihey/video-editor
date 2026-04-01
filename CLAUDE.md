@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Gameplay highlight and violence detector that uses multiple ML models + audio analysis to find the best moments in video collections. Currently tuned for RDR2 PS5 gameplay clips but designed to work with any game. Includes a Remotion-based renderer for cinematic output with Ken Burns zoom, transitions, SFX, color grading, action overlays, and AI voiceover. Supports both horizontal (16:9) and vertical (9:16) output for YouTube Shorts, TikTok, and Instagram Reels.
+Gameplay highlight and violence detector with **natural language video querying**. Index a folder of videos with Qwen2.5-VL, then search with any text query (e.g. "Scenes with shots to the head") to get an instant compilation. Also includes multi-signal ML detection (CLIP + PANNs + optical flow) and a Remotion-based renderer for cinematic output with Ken Burns zoom, transitions, SFX, color grading, action overlays, and AI voiceover. Supports both horizontal (16:9) and vertical (9:16) output for YouTube Shorts, TikTok, and Instagram Reels.
 
 ## Critical Constraints
 
@@ -17,6 +17,7 @@ Gameplay highlight and violence detector that uses multiple ML models + audio an
 
 ```
 video-editor/
+├── query_videos.py          # ★ Natural language video search (Qwen2.5-VL index + query)
 ├── detect_highlights.py     # CLIP + audio hybrid highlight detection
 ├── detect_violence.py       # 4-signal violence detection (PANNs + CLIP + VideoMAE + optical flow)
 ├── condense.py              # Rapid-fire montage from highlight clips (audio transient detection)
@@ -46,17 +47,19 @@ video-editor/
 ├── highlights/              # Output directory (gitignored)
 ├── highlights_violence/     # Violence detection output (gitignored)
 ├── highlights_batch/        # Batch analysis output (gitignored)
+├── video_index/             # VLM index output (gitignored)
 └── CLAUDE.md
 ```
 
 ## Tech Stack
 
+- **VLM Query Engine**: Qwen2.5-VL-7B-Instruct (4-bit quantized, ~5GB VRAM) for natural language video search
 - **Audio Classification**: PANNs CNN14 (AudioSet 527 classes — gunshot, explosion, punch, scream)
 - **Visual Scoring**: OpenAI CLIP ViT-L/14 (text-guided frame scoring with RDR2-tuned prompts)
 - **Action Recognition**: VideoMAE (Kinetics-400 — punching, kicking, sword fighting, wrestling)
 - **Motion Detection**: Farneback optical flow (downscaled to 240px for speed/memory)
 - **Audio Transients**: scipy onset detection with adaptive median thresholding
-- **VLM**: Claude API for keyframe rating (detect_vlm.py)
+- **VLM (legacy)**: Claude API for keyframe rating (detect_vlm.py)
 - **TTS**: Qwen3-TTS 0.6B for AI voiceover narration
 - **Video Rendering**: Remotion 4 (React) with TransitionSeries, Ken Burns, SFX, color grading
 - **Vertical Reframing**: Optical flow focal point detection + PyAutoFlip
@@ -64,10 +67,38 @@ video-editor/
 - **Audio Processing**: ffmpeg + numpy
 - **GPU**: CUDA via PyTorch (RTX 4060 8GB)
 - **Environment**: conda (`video-highlights`) for Python, npm for Remotion
+- **VLM Dependencies**: `pip install transformers bitsandbytes accelerate qwen-vl-utils`
 
 ## Pipeline
 
-### Single video workflow
+### Natural language query (recommended)
+
+```bash
+conda activate video-highlights
+
+# 1. Index all videos (one-time, saves frames + VLM descriptions)
+python query_videos.py index /path/to/videos -o ./video_index
+
+# 2. Query with any natural language text
+python query_videos.py query ./video_index "Scenes with shots to the head" -o headshots.mp4
+python query_videos.py query ./video_index "horse chases with gunfire" -o chases.mp4
+python query_videos.py query ./video_index "explosions and dynamite" -o explosions.mp4
+
+# Fast mode (text-only matching, no VLM re-ranking — instant results)
+python query_videos.py query ./video_index "fistfights" -o fights.mp4 --fast
+
+# More clips, no labels
+python query_videos.py query ./video_index "stealth kills" -o stealth.mp4 -n 30 --no-labels
+
+# Re-edit a query result (keep only A, C, F)
+python query_videos.py reassemble headshots.json -o headshots_v2.mp4 --include A,C,F
+
+# Use smaller model for faster indexing (less accurate)
+python query_videos.py index /path/to/videos -o ./index \
+  --model Qwen/Qwen2.5-VL-3B-Instruct --no-4bit
+```
+
+### Single video workflow (legacy ML pipeline)
 
 ```bash
 conda activate video-highlights
@@ -121,6 +152,15 @@ python generate_voiceover.py highlights/best.json
 ```
 
 ## Scripts
+
+### query_videos.py
+Natural language video search using Qwen2.5-VL (local, no API calls):
+- **`index`**: Extract keyframes at configurable FPS, generate rich scene descriptions with VLM, save searchable index. Incremental — skips already-indexed videos. Resume-safe — saves after each video.
+- **`query`**: Two-stage search: fast text matching on descriptions → VLM re-ranking of top candidates → segment building → ffmpeg compilation. Use `--fast` to skip VLM re-ranking.
+- **`reassemble`**: Re-edit a query result manifest (include/exclude/trim segments)
+- Model: Qwen2.5-VL-7B-Instruct with 4-bit NF4 quantization (~5GB VRAM on RTX 4060 8GB)
+- Configurable: `--model`, `--no-4bit`, `--fps`, `-n`, `--no-labels`
+- Index format: `index.json` + `frames/` directory with saved keyframe JPEGs
 
 ### condense_violence.py
 Best-moments condensation with labeled segments:
