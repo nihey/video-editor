@@ -32,7 +32,7 @@ from decord import VideoReader, cpu
 
 # ── Config ──────────────────────────────────────────────────────────────────
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_INDEX_FPS = 0.5    # frames per second for indexing
 FRAME_WIDTH = 640          # saved frame width
 FRAME_HEIGHT = 360         # saved frame height
