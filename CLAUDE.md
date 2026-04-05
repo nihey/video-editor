@@ -53,7 +53,7 @@ video-editor/
 
 ## Tech Stack
 
-- **VLM Query Engine**: Qwen2.5-VL-7B-Instruct (4-bit quantized, ~5GB VRAM) for natural language video search
+- **Multimodal Embeddings**: Qwen3-VL-Embedding-2B (~4GB VRAM) for natural language video search via ChromaDB vector store
 - **Audio Classification**: PANNs CNN14 (AudioSet 527 classes — gunshot, explosion, punch, scream)
 - **Visual Scoring**: OpenAI CLIP ViT-L/14 (text-guided frame scoring with RDR2-tuned prompts)
 - **Action Recognition**: VideoMAE (Kinetics-400 — punching, kicking, sword fighting, wrestling)
@@ -67,35 +67,36 @@ video-editor/
 - **Audio Processing**: ffmpeg + numpy
 - **GPU**: CUDA via PyTorch (RTX 4060 8GB)
 - **Environment**: conda (`video-highlights`) for Python, npm for Remotion
-- **VLM Dependencies**: `pip install transformers bitsandbytes accelerate qwen-vl-utils`
+- **VLM Dependencies**: `pip install transformers bitsandbytes accelerate qwen-vl-utils chromadb`
 
 ## Pipeline
 
 ### Natural language query (recommended)
 
+Uses multimodal embeddings (Qwen3-VL-Embedding) to embed video chunks and text
+queries into the same vector space. ChromaDB stores embeddings for sub-second search.
+No text middleman — video pixels are directly comparable to text.
+
 ```bash
 conda activate video-highlights
 
-# 1. Index all videos (one-time, saves frames + VLM descriptions)
+# 1. Index all videos (one-time, ~2s per 30s chunk)
+#    Chunks videos → skips still frames → preprocesses → embeds → stores in ChromaDB
 python query_videos.py index /path/to/videos -o ./video_index
 
-# 2. Query with any natural language text
+# 2. Query with any natural language text (sub-second after model loads)
 python query_videos.py query ./video_index "Scenes with shots to the head" -o headshots.mp4
 python query_videos.py query ./video_index "horse chases with gunfire" -o chases.mp4
 python query_videos.py query ./video_index "explosions and dynamite" -o explosions.mp4
 
-# Fast mode (text-only matching, no VLM re-ranking — instant results)
-python query_videos.py query ./video_index "fistfights" -o fights.mp4 --fast
-
-# More clips, no labels
+# More clips, no labels, lower threshold
 python query_videos.py query ./video_index "stealth kills" -o stealth.mp4 -n 30 --no-labels
 
 # Re-edit a query result (keep only A, C, F)
 python query_videos.py reassemble headshots.json -o headshots_v2.mp4 --include A,C,F
 
-# Use smaller model for faster indexing (less accurate)
-python query_videos.py index /path/to/videos -o ./index \
-  --model Qwen/Qwen2.5-VL-3B-Instruct --no-4bit
+# Index stats
+python query_videos.py stats ./video_index
 ```
 
 ### Single video workflow (legacy ML pipeline)
@@ -154,13 +155,14 @@ python generate_voiceover.py highlights/best.json
 ## Scripts
 
 ### query_videos.py
-Natural language video search using Qwen2.5-VL (local, no API calls):
-- **`index`**: Extract keyframes at configurable FPS, generate rich scene descriptions with VLM, save searchable index. Incremental — skips already-indexed videos. Resume-safe — saves after each video.
-- **`query`**: Two-stage search: fast text matching on descriptions → VLM re-ranking of top candidates → segment building → ffmpeg compilation. Use `--fast` to skip VLM re-ranking.
+Natural language video search using multimodal embeddings (local, no API calls):
+- **`index`**: Chunk videos (30s with 5s overlap), skip still frames (JPEG size heuristic), preprocess (480p 5fps), embed with Qwen3-VL-Embedding, store in ChromaDB. Incremental — skips already-indexed chunks.
+- **`query`**: Embed text query into same vector space, cosine similarity search in ChromaDB, build compilation from top matches. Sub-second search after model loads.
 - **`reassemble`**: Re-edit a query result manifest (include/exclude/trim segments)
-- Model: Qwen2.5-VL-7B-Instruct with 4-bit NF4 quantization (~5GB VRAM on RTX 4060 8GB)
-- Configurable: `--model`, `--no-4bit`, `--fps`, `-n`, `--no-labels`
-- Index format: `index.json` + `frames/` directory with saved keyframe JPEGs
+- **`stats`**: Show index statistics (chunks, videos, per-video counts)
+- Model: Qwen3-VL-Embedding-2B (~4GB VRAM on RTX 4060 8GB)
+- Vector store: ChromaDB with cosine similarity (persistent, local)
+- Configurable: `--model`, `--no-4bit`, `--chunk-duration`, `--chunk-overlap`, `-n`, `--threshold`
 
 ### condense_violence.py
 Best-moments condensation with labeled segments:
