@@ -2,9 +2,13 @@
 """
 Query videos with natural language using multimodal embeddings.
 
-Embeds video chunks and text queries into the same vector space using
-Qwen3-VL-Embedding. ChromaDB stores embeddings for instant semantic search.
-No text middleman — video pixels are directly comparable to text.
+Model-independent: supports any multimodal embedding backend via pluggable
+EmbeddingBackend classes.  Ships with two backends:
+  - QwenEmbeddingBackend  (Qwen3-VL-Embedding-2B, purpose-built, MRL 768d)
+  - GemmaEmbeddingBackend (Gemma 4 E2B/E4B, hidden-state extraction)
+
+ChromaDB stores embeddings for instant semantic search.  Each model gets its
+own collection so indexes never mix.
 
 Two-phase system:
   1. index  — Chunk videos, skip still frames, embed chunks, store in ChromaDB
@@ -12,7 +16,7 @@ Two-phase system:
 
 Requires: pip install transformers bitsandbytes accelerate qwen-vl-utils chromadb
 
-Hardware: RTX 4060 8GB (Qwen3-VL-Embedding-2B, ~4GB VRAM)
+Hardware: RTX 4060 8GB (Qwen3-VL-Embedding-2B ~4GB / Gemma-4-E2B ~2GB in 4-bit)
 """
 
 import os
@@ -47,7 +51,7 @@ PREPROCESS_HEIGHT = 480  # downscale to 480p
 # Embedding
 EMBED_FPS = 1.0        # fps fed to the model
 EMBED_MAX_FRAMES = 32  # max frames per chunk for the model
-EMBED_DIMS = 768       # MRL truncation dimensionality
+EMBED_DIMS = 768       # MRL truncation dimensionality (Qwen default)
 
 # Still-frame detection
 STILL_THRESHOLD = 0.98  # JPEG size ratio above which a chunk is "still"
@@ -65,45 +69,36 @@ CONFIDENCE_THRESHOLD = 0.30
 COLLECTION_PREFIX = "video_chunks"
 
 
-# ── Model ───────────────────────────────────────────────────────────────────
+# ── Model Backends ─────────────────────────────────────────────────────────
 
-def _build_embedding_class():
-    """Build Qwen3VLForEmbedding using the correct Qwen3VL base classes.
-    Wraps Qwen3VLModel directly to get last_hidden_state for pooling,
-    avoiding the causal LM head entirely.
-    """
-    from transformers.models.qwen3_vl.modeling_qwen3_vl import (
-        Qwen3VLPreTrainedModel, Qwen3VLModel, Qwen3VLConfig,
-    )
+class EmbeddingBackend:
+    """Abstract base for multimodal embedding backends."""
 
-    class Qwen3VLForEmbedding(Qwen3VLPreTrainedModel):
-        config: Qwen3VLConfig
+    def __init__(self):
+        self.model = None
+        self.processor = None
+        self._embed_dims = None
 
-        def __init__(self, config):
-            super().__init__(config)
-            self.model = Qwen3VLModel(config)
-            self.post_init()
+    @property
+    def embed_dims(self) -> int:
+        if self._embed_dims is not None:
+            return self._embed_dims
+        raise RuntimeError("Model not loaded — embed_dims unknown")
 
-        def get_input_embeddings(self):
-            return self.model.get_input_embeddings()
+    def load(self, model_name: str, use_4bit: bool = True):
+        raise NotImplementedError
 
-        def set_input_embeddings(self, value):
-            self.model.set_input_embeddings(value)
+    def embed_video(self, chunk_path: str) -> list[float]:
+        raise NotImplementedError
 
-        def forward(self, input_ids=None, attention_mask=None, position_ids=None,
-                    past_key_values=None, inputs_embeds=None, pixel_values=None,
-                    pixel_values_videos=None, image_grid_thw=None,
-                    video_grid_thw=None, cache_position=None, **kwargs):
-            return self.model(
-                input_ids=input_ids, pixel_values=pixel_values,
-                pixel_values_videos=pixel_values_videos,
-                image_grid_thw=image_grid_thw, video_grid_thw=video_grid_thw,
-                position_ids=position_ids, attention_mask=attention_mask,
-                past_key_values=past_key_values, inputs_embeds=inputs_embeds,
-                cache_position=cache_position, **kwargs,
-            )
+    def embed_text(self, query: str) -> list[float]:
+        raise NotImplementedError
 
-    return Qwen3VLForEmbedding
+    def cleanup(self):
+        del self.model, self.processor
+        self.model = self.processor = None
+        torch.cuda.empty_cache()
+        gc.collect()
 
 
 def _pooling_last(hidden_state, attention_mask):
@@ -115,113 +110,276 @@ def _pooling_last(hidden_state, attention_mask):
     return hidden_state[row, col]
 
 
-def load_model(model_name=DEFAULT_MODEL, use_4bit=True):
-    """Load Qwen3-VL-Embedding with optional 4-bit quantization."""
-    Qwen3VLForEmbedding = _build_embedding_class()
-    from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
+class QwenEmbeddingBackend(EmbeddingBackend):
+    """Qwen3-VL-Embedding with MRL truncation to 768 dims."""
 
-    print(f"Loading {model_name}{'  (4-bit)' if use_4bit else ''}...")
+    MRL_DIMS = 768
 
-    load_kwargs = {}
-    if use_4bit:
-        from transformers import BitsAndBytesConfig
-        load_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
+    @property
+    def embed_dims(self):
+        return self.MRL_DIMS
+
+    def load(self, model_name, use_4bit=True):
+        from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+            Qwen3VLPreTrainedModel, Qwen3VLModel, Qwen3VLConfig,
         )
-    else:
-        load_kwargs["torch_dtype"] = torch.float16
+        from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
 
-    model = Qwen3VLForEmbedding.from_pretrained(model_name, **load_kwargs)
-    if not use_4bit:
-        model = model.to("cuda" if torch.cuda.is_available() else "cpu")
-    processor = Qwen3VLProcessor.from_pretrained(model_name, padding_side="right")
-    model.eval()
-    print("Model loaded.")
-    return model, processor
+        class Qwen3VLForEmbedding(Qwen3VLPreTrainedModel):
+            config: Qwen3VLConfig
+            def __init__(self, config):
+                super().__init__(config)
+                self.model = Qwen3VLModel(config)
+                self.post_init()
+            def get_input_embeddings(self):
+                return self.model.get_input_embeddings()
+            def set_input_embeddings(self, value):
+                self.model.set_input_embeddings(value)
+            def forward(self, input_ids=None, attention_mask=None, position_ids=None,
+                        past_key_values=None, inputs_embeds=None, pixel_values=None,
+                        pixel_values_videos=None, image_grid_thw=None,
+                        video_grid_thw=None, cache_position=None, **kwargs):
+                return self.model(
+                    input_ids=input_ids, pixel_values=pixel_values,
+                    pixel_values_videos=pixel_values_videos,
+                    image_grid_thw=image_grid_thw, video_grid_thw=video_grid_thw,
+                    position_ids=position_ids, attention_mask=attention_mask,
+                    past_key_values=past_key_values, inputs_embeds=inputs_embeds,
+                    cache_position=cache_position, **kwargs,
+                )
 
+        print(f"Loading {model_name}{'  (4-bit)' if use_4bit else ''}...")
+        load_kwargs = {}
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+            )
+        else:
+            load_kwargs["torch_dtype"] = torch.float16
 
-def embed_video_chunk(model, processor, chunk_path):
-    """Embed a video chunk into a 768-dim vector."""
-    from qwen_vl_utils import process_vision_info
+        self.model = Qwen3VLForEmbedding.from_pretrained(model_name, **load_kwargs)
+        if not use_4bit:
+            self.model = self.model.to(DEVICE)
+        self.processor = Qwen3VLProcessor.from_pretrained(model_name, padding_side="right")
+        self.model.eval()
+        self._embed_dims = self.MRL_DIMS
+        print("Model loaded.")
 
-    conversation = [{
-        "role": "system",
-        "content": [{"type": "text", "text": "Represent the video for retrieval."}],
-    }, {
-        "role": "user",
-        "content": [{"type": "video", "video": f"file://{os.path.abspath(chunk_path)}",
-                      "fps": EMBED_FPS, "max_frames": EMBED_MAX_FRAMES}],
-    }]
-
-    text = processor.apply_chat_template(
-        conversation, tokenize=False, add_generation_prompt=True,
-    )
-    images, video_inputs, video_kwargs = process_vision_info(
-        conversation, return_video_metadata=True, return_video_kwargs=True,
-    )
-
-    if video_inputs is not None:
-        videos, video_metadata = zip(*video_inputs)
-        videos, video_metadata = list(videos), list(video_metadata)
-    else:
-        videos, video_metadata = None, None
-
-    inputs = processor(
-        text=[text], images=images, videos=videos, video_metadata=video_metadata,
-        padding=True, return_tensors="pt", **video_kwargs,
-    )
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
-
-    with torch.no_grad():
-        outputs = model(**inputs)
-        emb = _pooling_last(outputs.last_hidden_state, inputs["attention_mask"])
+    def _truncate_and_normalize(self, hidden_state, attention_mask):
+        emb = _pooling_last(hidden_state, attention_mask)
         emb = F.normalize(emb, p=2, dim=-1)
+        vec = emb[0][:self.MRL_DIMS]
+        norm = torch.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        return vec.cpu().float().tolist()
 
-    # MRL truncation to EMBED_DIMS + L2 normalize
-    vec = emb[0][:EMBED_DIMS]
-    norm = torch.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm
-    result = vec.cpu().float().tolist()
+    def embed_video(self, chunk_path):
+        from qwen_vl_utils import process_vision_info
+        conversation = [{
+            "role": "system",
+            "content": [{"type": "text", "text": "Represent the video for retrieval."}],
+        }, {
+            "role": "user",
+            "content": [{"type": "video", "video": f"file://{os.path.abspath(chunk_path)}",
+                          "fps": EMBED_FPS, "max_frames": EMBED_MAX_FRAMES}],
+        }]
+        text = self.processor.apply_chat_template(
+            conversation, tokenize=False, add_generation_prompt=True,
+        )
+        images, video_inputs, video_kwargs = process_vision_info(
+            conversation, return_video_metadata=True, return_video_kwargs=True,
+        )
+        if video_inputs is not None:
+            videos, video_metadata = zip(*video_inputs)
+            videos, video_metadata = list(videos), list(video_metadata)
+        else:
+            videos, video_metadata = None, None
+        inputs = self.processor(
+            text=[text], images=images, videos=videos, video_metadata=video_metadata,
+            padding=True, return_tensors="pt", **video_kwargs,
+        )
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            result = self._truncate_and_normalize(outputs.last_hidden_state,
+                                                   inputs["attention_mask"])
+        del inputs, outputs
+        return result
 
-    del inputs, outputs, emb
-    return result
+    def embed_text(self, query):
+        conversation = [{
+            "role": "system",
+            "content": [{"type": "text", "text": "Retrieve videos relevant to the query."}],
+        }, {
+            "role": "user",
+            "content": [{"type": "text", "text": query}],
+        }]
+        text = self.processor.apply_chat_template(
+            conversation, tokenize=False, add_generation_prompt=True,
+        )
+        inputs = self.processor(text=[text], padding=True, return_tensors="pt")
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            result = self._truncate_and_normalize(outputs.last_hidden_state,
+                                                   inputs["attention_mask"])
+        del inputs, outputs
+        return result
 
 
-def embed_query(model, processor, query_text):
-    """Embed a text query into the same 768-dim vector space."""
-    conversation = [{
-        "role": "system",
-        "content": [{"type": "text", "text": "Retrieve videos relevant to the query."}],
-    }, {
-        "role": "user",
-        "content": [{"type": "text", "text": query_text}],
-    }]
+class GemmaEmbeddingBackend(EmbeddingBackend):
+    """Gemma 4 E2B/E4B — hidden-state extraction with last-token pooling.
 
-    text = processor.apply_chat_template(
-        conversation, tokenize=False, add_generation_prompt=True,
-    )
-    inputs = processor(
-        text=[text], padding=True, return_tensors="pt",
-    )
-    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    Extracts multimodal representations from the decoder's last hidden layer.
+    Uses the instruct variant for chat-template support.  Processes video as
+    sampled key-frames (images) to fit within 8 GB VRAM in 4-bit mode.
+    """
 
-    with torch.no_grad():
-        outputs = model(**inputs)
-        emb = _pooling_last(outputs.last_hidden_state, inputs["attention_mask"])
+    FRAMES_PER_CHUNK = 4  # sample 4 frames per video chunk
+
+    def load(self, model_name, use_4bit=True):
+        from transformers import AutoModelForMultimodalLM, AutoProcessor
+
+        # Auto-select instruct variant for chat-template support
+        actual_model = model_name
+        if not model_name.endswith("-it"):
+            actual_model = model_name + "-it"
+            print(f"Auto-selecting instruct variant: {actual_model}")
+        self._model_name = actual_model
+
+        print(f"Loading {actual_model}{'  (4-bit)' if use_4bit else ''}...")
+        load_kwargs = {}
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+            )
+        else:
+            load_kwargs["torch_dtype"] = torch.float16
+            load_kwargs["device_map"] = "auto"
+
+        self.model = AutoModelForMultimodalLM.from_pretrained(
+            actual_model, **load_kwargs,
+        )
+        if not use_4bit:
+            self.model = self.model.to(DEVICE)
+        self.processor = AutoProcessor.from_pretrained(actual_model)
+        self.model.eval()
+
+        cfg = self.model.config
+        if hasattr(cfg, "text_config") and hasattr(cfg.text_config, "hidden_size"):
+            self._embed_dims = cfg.text_config.hidden_size
+        elif hasattr(cfg, "hidden_size"):
+            self._embed_dims = cfg.hidden_size
+        else:
+            self._embed_dims = 1536
+        print(f"Model loaded (embed_dims={self._embed_dims}).")
+
+    def _get_device(self):
+        try:
+            return self.model.device
+        except Exception:
+            return next(self.model.parameters()).device
+
+    def _extract_embedding(self, hidden_states, attention_mask):
+        last_hidden = hidden_states[-1]
+        emb = _pooling_last(last_hidden, attention_mask)
         emb = F.normalize(emb, p=2, dim=-1)
+        return emb[0]
 
-    vec = emb[0][:EMBED_DIMS]
-    norm = torch.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm
-    result = vec.cpu().float().tolist()
+    def _extract_keyframes(self, video_path, n_frames=None):
+        """Extract evenly-spaced key frames from a video as PIL images."""
+        from PIL import Image as PILImage
+        n_frames = n_frames or self.FRAMES_PER_CHUNK
+        duration = get_video_duration(video_path)
+        if duration < 0.5:
+            return []
 
-    del inputs, outputs, emb
-    return result
+        frames = []
+        with tempfile.TemporaryDirectory(prefix="gemma_frames_") as tmpdir:
+            for i in range(n_frames):
+                t = duration * (i + 0.5) / n_frames
+                fp = os.path.join(tmpdir, f"frame_{i:02d}.jpg")
+                subprocess.run([
+                    "ffmpeg", "-y", "-ss", f"{t:.2f}", "-i", video_path,
+                    "-frames:v", "1", "-q:v", "3",
+                    "-vf", "scale=320:-2",  # keep small for VRAM
+                    fp,
+                ], capture_output=True)
+                if os.path.exists(fp) and os.path.getsize(fp) > 100:
+                    frames.append(PILImage.open(fp).copy())
+        return frames
+
+    def _embed_image(self, image):
+        """Embed a single PIL image, return raw tensor (not list)."""
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": "Represent this image for retrieval."},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, tokenize=True, return_dict=True,
+            return_tensors="pt", add_generation_prompt=True,
+        )
+        device = self._get_device()
+        inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                  for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_hidden_states=True)
+            vec = self._extract_embedding(outputs.hidden_states,
+                                           inputs["attention_mask"])
+        del inputs, outputs
+        torch.cuda.empty_cache()
+        return vec
+
+    def embed_video(self, chunk_path):
+        """Embed video by averaging key-frame embeddings."""
+        frames = self._extract_keyframes(chunk_path)
+        if not frames:
+            raise ValueError(f"No frames extracted from {chunk_path}")
+
+        vecs = []
+        for frame in frames:
+            vecs.append(self._embed_image(frame))
+        # Average and re-normalize
+        stacked = torch.stack(vecs)
+        avg = stacked.mean(dim=0)
+        avg = F.normalize(avg, p=2, dim=-1)
+        return avg.cpu().float().tolist()
+
+    def embed_text(self, query):
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": f"Retrieve videos relevant to: {query}"},
+        ]}]
+        inputs = self.processor.apply_chat_template(
+            messages, tokenize=True, return_dict=True,
+            return_tensors="pt", add_generation_prompt=True,
+        )
+        device = self._get_device()
+        inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                  for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_hidden_states=True)
+            vec = self._extract_embedding(outputs.hidden_states,
+                                           inputs["attention_mask"])
+        result = vec.cpu().float().tolist()
+        del inputs, outputs
+        return result
+
+
+def get_backend(model_name: str) -> EmbeddingBackend:
+    """Auto-detect embedding backend from model name."""
+    name_lower = model_name.lower()
+    if "qwen" in name_lower:
+        return QwenEmbeddingBackend()
+    elif "gemma" in name_lower:
+        return GemmaEmbeddingBackend()
+    else:
+        print(f"Unknown model family '{model_name}', using generic hidden-state backend")
+        return GemmaEmbeddingBackend()
 
 
 # ── Video Chunking ──────────────────────────────────────────────────────────
@@ -423,7 +581,8 @@ def index_videos(video_dir: str, index_dir: str,
         sys.exit(1)
 
     # Load model + store
-    model, processor = load_model(model_name, use_4bit=use_4bit)
+    backend = get_backend(model_name)
+    backend.load(model_name, use_4bit=use_4bit)
     collection = get_collection(db_path, model_name)
 
     # Check already-indexed chunks
@@ -478,7 +637,7 @@ def index_videos(video_dir: str, index_dir: str,
                 # 4. Embed
                 t0 = time.time()
                 try:
-                    embedding = embed_video_chunk(model, processor, preprocessed_path)
+                    embedding = backend.embed_video(preprocessed_path)
                 except Exception as e:
                     print(f"    [{ci+1}/{len(chunks)}] {chunk['start']:.0f}s "
                           f"— embed error: {e}")
@@ -508,9 +667,7 @@ def index_videos(video_dir: str, index_dir: str,
                       f"({rate:.2f} chunks/s)")
 
     # Cleanup
-    del model, processor
-    torch.cuda.empty_cache()
-    gc.collect()
+    backend.cleanup()
 
     total_elapsed = time.time() - t0_global
     print(f"\n{'='*60}")
@@ -548,15 +705,14 @@ def query_index(index_dir: str, query_text: str, output_path: str,
 
     # 1. Embed the text query
     print("Loading model for query embedding...")
-    model, processor = load_model(model_name, use_4bit=use_4bit)
+    backend = get_backend(model_name)
+    backend.load(model_name, use_4bit=use_4bit)
 
     t0 = time.time()
-    query_embedding = embed_query(model, processor, query_text)
+    query_embedding = backend.embed_text(query_text)
     print(f"Query embedded in {time.time() - t0:.2f}s")
 
-    del model, processor
-    torch.cuda.empty_cache()
-    gc.collect()
+    backend.cleanup()
 
     # 2. Search ChromaDB
     # Request more results than needed to allow for merging

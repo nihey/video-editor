@@ -53,7 +53,7 @@ video-editor/
 
 ## Tech Stack
 
-- **Multimodal Embeddings**: Qwen3-VL-Embedding-2B (~4GB VRAM) for natural language video search via ChromaDB vector store
+- **Multimodal Embeddings**: Model-independent backend (Qwen3-VL-Embedding-2B ~4GB / Gemma-4-E2B ~2GB in 4-bit) for natural language video search via ChromaDB vector store
 - **Audio Classification**: PANNs CNN14 (AudioSet 527 classes — gunshot, explosion, punch, scream)
 - **Visual Scoring**: OpenAI CLIP ViT-L/14 (text-guided frame scoring with RDR2-tuned prompts)
 - **Action Recognition**: VideoMAE (Kinetics-400 — punching, kicking, sword fighting, wrestling)
@@ -73,21 +73,22 @@ video-editor/
 
 ### Natural language query (recommended)
 
-Uses multimodal embeddings (Qwen3-VL-Embedding) to embed video chunks and text
-queries into the same vector space. ChromaDB stores embeddings for sub-second search.
-No text middleman — video pixels are directly comparable to text.
+Model-independent: supports Qwen3-VL-Embedding (purpose-built, default) or
+Gemma 4 E2B (hidden-state extraction, lighter VRAM).  Each model gets its own
+ChromaDB collection so indexes never mix.
 
 ```bash
 conda activate video-highlights
 
-# 1. Index all videos (one-time, ~2s per 30s chunk)
-#    Chunks videos → skips still frames → preprocesses → embeds → stores in ChromaDB
+# 1. Index all videos — default Qwen model
 python query_videos.py index /path/to/videos -o ./video_index
+
+# 1b. Or index with Gemma 4 (lighter, ~2GB VRAM in 4-bit)
+python query_videos.py index /path/to/videos -o ./video_index_gemma --model google/gemma-4-E2B
 
 # 2. Query with any natural language text (sub-second after model loads)
 python query_videos.py query ./video_index "Scenes with shots to the head" -o headshots.mp4
-python query_videos.py query ./video_index "horse chases with gunfire" -o chases.mp4
-python query_videos.py query ./video_index "explosions and dynamite" -o explosions.mp4
+python query_videos.py query ./video_index_gemma "explosions and dynamite" -o explosions.mp4 --model google/gemma-4-E2B
 
 # More clips, no labels, lower threshold
 python query_videos.py query ./video_index "stealth kills" -o stealth.mp4 -n 30 --no-labels
@@ -155,13 +156,18 @@ python generate_voiceover.py highlights/best.json
 ## Scripts
 
 ### query_videos.py
-Natural language video search using multimodal embeddings (local, no API calls):
-- **`index`**: Chunk videos (30s with 5s overlap), skip still frames (JPEG size heuristic), preprocess (480p 5fps), embed with Qwen3-VL-Embedding, store in ChromaDB. Incremental — skips already-indexed chunks.
+Natural language video search using multimodal embeddings (local, no API calls).
+**Model-independent** — pluggable `EmbeddingBackend` classes auto-detected from `--model`:
+- **`QwenEmbeddingBackend`**: Qwen3-VL-Embedding-2B, purpose-built for retrieval, MRL 768d (~4GB VRAM)
+- **`GemmaEmbeddingBackend`**: Gemma 4 E2B/E4B, hidden-state extraction, native video+audio (~2GB VRAM in 4-bit)
+- Unknown models fall back to the Gemma-style hidden-state backend
+
+Commands:
+- **`index`**: Chunk videos (30s with 5s overlap), skip still frames (JPEG size heuristic), preprocess (480p 5fps), embed, store in ChromaDB. Incremental — skips already-indexed chunks.
 - **`query`**: Embed text query into same vector space, cosine similarity search in ChromaDB, build compilation from top matches. Sub-second search after model loads.
 - **`reassemble`**: Re-edit a query result manifest (include/exclude/trim segments)
 - **`stats`**: Show index statistics (chunks, videos, per-video counts)
-- Model: Qwen3-VL-Embedding-2B (~4GB VRAM on RTX 4060 8GB)
-- Vector store: ChromaDB with cosine similarity (persistent, local)
+- Vector store: ChromaDB with cosine similarity (persistent, local). Each model gets its own collection.
 - Configurable: `--model`, `--no-4bit`, `--chunk-duration`, `--chunk-overlap`, `-n`, `--threshold`
 
 ### condense_violence.py
